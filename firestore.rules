@@ -1,0 +1,79 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isSuperAdmin() {
+      return isSignedIn() && getUserRole() == 'superadmin';
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (getUserRole() == 'admin' || isSuperAdmin());
+    }
+
+    function isTeamLead() {
+      return isSignedIn() && getUserRole() == 'teamlead';
+    }
+
+    function isEmployee() {
+      return isSignedIn() && getUserRole() == 'employee';
+    }
+
+    function isAdminOrLead() {
+      return isAdmin() || isTeamLead();
+    }
+
+    // ---- USERS (login/role profiles) ----
+    match /users/{uid} {
+      allow read: if isSignedIn() && (request.auth.uid == uid || isAdminOrLead());
+      allow create: if isAdmin();
+      allow update: if isSuperAdmin() || (isAdmin() && resource.data.role != 'superadmin');
+      allow delete: if isSuperAdmin();
+    }
+
+    // ---- EMPLOYEES (HR records shown in the Employees tab) ----
+    match /employees/{employeeId} {
+      allow read: if isAdminOrLead() || (isEmployee() && resource.data.uid == request.auth.uid);
+      allow write: if isAdmin();
+    }
+
+    // ---- TASKS ----
+    match /tasks/{taskId} {
+      allow read: if isAdminOrLead() || (isEmployee() && resource.data.assignedToUid == request.auth.uid);
+      allow create: if isAdminOrLead();
+      // an employee may ONLY flip the status field on their own task (Start/Done)
+      allow update: if isAdminOrLead() ||
+        (isEmployee() &&
+         resource.data.assignedToUid == request.auth.uid &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']));
+      allow delete: if isAdminOrLead();
+    }
+
+    // ---- ATTENDANCE ----
+    match /attendance/{recordId} {
+      allow read: if isAdminOrLead() || (isEmployee() && resource.data.employeeUid == request.auth.uid);
+      allow write: if isAdminOrLead(); // marking attendance stays with admin/team lead
+    }
+
+    // ---- LEAVES ----
+    match /leaves/{leaveId} {
+      allow read: if isAdminOrLead() || (isEmployee() && resource.data.employeeUid == request.auth.uid);
+      allow create: if isEmployee() && request.resource.data.employeeUid == request.auth.uid;
+      allow update: if isAdminOrLead(); // approve / reject
+      allow delete: if isAdmin();
+    }
+
+    // ---- ASSETS ----
+    match /assets/{assetId} {
+      allow read: if isAdminOrLead() || (isEmployee() && resource.data.assignedToUid == request.auth.uid);
+      allow write: if isAdmin();
+    }
+  }
+}
